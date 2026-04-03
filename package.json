@@ -1,0 +1,19 @@
+{
+  "name": "clichat",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AI CLI-to-Chat UI library — wrap AI CLIs into a friendly chatbot experience",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
