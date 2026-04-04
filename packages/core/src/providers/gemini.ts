@@ -1,12 +1,13 @@
 import type { CLIProvider, SpawnConfig, SpawnOptions, ParsedEvent } from "../types.js";
 import { StateMachineParser } from "../parsers/ansi-strip.js";
+import { GeminiJsonParser } from "../parsers/gemini-json.js";
 import { findBinary, buildFullPath } from "./utils.js";
 
 /**
- * Parser for Gemini CLI output.
+ * Parser for Gemini CLI ANSI output (interactive PTY mode).
  * Gemini uses ✦ as its prompt marker and has distinctive output patterns.
  */
-class GeminiParser extends StateMachineParser {
+class GeminiAnsiParser extends StateMachineParser {
   private seenPrompt = false;
 
   protected classifyLine(
@@ -14,28 +15,22 @@ class GeminiParser extends StateMachineParser {
   ): { type: ParsedEvent["type"]; role: ParsedEvent["role"] } | "boundary" | null {
     const trimmed = line.trim();
 
-    // Empty line
     if (!trimmed) return null;
 
-    // Gemini prompt marker (✦) — boundary between exchanges
     if (trimmed.startsWith("✦")) {
-      // Reset before setting — ensures proper state between conversation turns
       this.seenPrompt = false;
       this.seenPrompt = true;
       return "boundary";
     }
 
-    // Spinner/loading patterns
     if (trimmed.match(/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/)) {
       return { type: "thinking", role: "assistant" };
     }
 
-    // Tool use patterns
     if (trimmed.startsWith("Using tool:") || trimmed.startsWith("Tool:")) {
       return { type: "tool_use", role: "tool" };
     }
 
-    // Default: assistant message content
     if (this.seenPrompt) {
       return { type: "message", role: "assistant" };
     }
@@ -50,8 +45,9 @@ class GeminiParser extends StateMachineParser {
 }
 
 /**
- * Gemini CLI provider.
- * Uses ANSI parsing since Gemini CLI doesn't support structured JSON output.
+ * Gemini CLI provider using per-message spawn with structured JSON output.
+ * Each send() spawns `gemini -p "msg" --output-format stream-json`.
+ * Uses `--resume latest` after the first message to maintain conversation context.
  */
 export const geminiProvider: CLIProvider = {
   id: "gemini",
@@ -59,8 +55,63 @@ export const geminiProvider: CLIProvider = {
   icon: "✦",
 
   async spawn(options: SpawnOptions): Promise<SpawnConfig> {
-    const geminiBin = findBinary("gemini");
+    return {
+      command: "true",
+      args: [],
+      cwd: options.cwd,
+      env: { ...options.env, PATH: buildFullPath() },
+      useChildProcess: true,
+    };
+  },
 
+  respawnOnSend(text: string, isFirst: boolean, options: SpawnOptions): SpawnConfig {
+    const geminiBin = findBinary("gemini");
+    const args = ["-p", text, "--output-format", "stream-json"];
+
+    if (options.model) {
+      args.push("--model", options.model);
+    }
+
+    if (options.permissionMode) {
+      args.push("--approval-mode", options.permissionMode);
+    }
+
+    if (!isFirst) {
+      args.push("--resume", "latest");
+    }
+
+    return {
+      command: geminiBin,
+      args,
+      cwd: options.cwd,
+      env: {
+        ...options.env,
+        TERM: "xterm-256color",
+        PATH: buildFullPath(),
+      },
+      useChildProcess: true,
+    };
+  },
+
+  parser: new GeminiJsonParser(),
+
+  formatInput(text: string): string {
+    return text + "\n";
+  },
+};
+
+/**
+ * Gemini CLI provider in interactive (PTY) mode.
+ * Keeps a single long-lived process with raw ANSI output.
+ * Requires node-pty for full terminal emulation.
+ */
+export const geminiInteractiveProvider: CLIProvider = {
+  id: "gemini-interactive",
+  label: "Gemini CLI (Interactive)",
+  icon: "✦",
+
+  async spawn(options: SpawnOptions): Promise<SpawnConfig> {
+    const geminiBin = findBinary("gemini");
     return {
       command: geminiBin,
       args: [],
@@ -70,11 +121,11 @@ export const geminiProvider: CLIProvider = {
         TERM: "xterm-256color",
         PATH: buildFullPath(),
       },
-      useChildProcess: false, // Gemini needs PTY for interactive mode
+      useChildProcess: false,
     };
   },
 
-  parser: new GeminiParser(),
+  parser: new GeminiAnsiParser(),
 
   formatInput(text: string): string {
     return text + "\n";
