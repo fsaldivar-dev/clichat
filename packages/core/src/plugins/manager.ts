@@ -10,14 +10,22 @@ export class PluginManager {
   /** Run all plugin onSessionStart hooks */
   async onSessionStart(session: ChatSessionEvents): Promise<void> {
     for (const plugin of this.plugins) {
-      await plugin.onSessionStart?.(session);
+      try {
+        await plugin.onSessionStart?.(session);
+      } catch (err) {
+        console.warn(`[clichat] plugin "${plugin.id}" onSessionStart failed:`, err);
+      }
     }
   }
 
   /** Run all plugin onSessionEnd hooks */
   async onSessionEnd(session: ChatSessionEvents): Promise<void> {
     for (const plugin of this.plugins) {
-      await plugin.onSessionEnd?.(session);
+      try {
+        await plugin.onSessionEnd?.(session);
+      } catch (err) {
+        console.warn(`[clichat] plugin "${plugin.id}" onSessionEnd failed:`, err);
+      }
     }
   }
 
@@ -29,7 +37,11 @@ export class PluginManager {
     let result = options;
     for (const plugin of this.plugins) {
       if (plugin.configureProvider) {
-        result = await plugin.configureProvider(provider, result);
+        try {
+          result = await plugin.configureProvider(provider, result);
+        } catch (err) {
+          console.warn(`[clichat] plugin "${plugin.id}" configureProvider failed:`, err);
+        }
       }
     }
     return result;
@@ -40,7 +52,11 @@ export class PluginManager {
     let result = message;
     for (const plugin of this.plugins) {
       if (plugin.transformMessage) {
-        result = plugin.transformMessage(result);
+        try {
+          result = plugin.transformMessage(result);
+        } catch (err) {
+          console.warn(`[clichat] plugin "${plugin.id}" transformMessage failed:`, err);
+        }
       }
     }
     return result;

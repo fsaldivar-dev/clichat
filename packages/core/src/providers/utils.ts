@@ -1,15 +1,25 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 /**
  * Resolve the full path of a CLI binary.
  * Handles the Electron PATH issue by using an interactive login shell.
- * Extracted from kuilo's `findBin` in electron/main.cjs:839-846.
+ * Uses execFileSync to avoid shell metacharacter interpretation.
  */
 export function findBinary(name: string): string {
   try {
-    const output = execSync(`/bin/zsh -ilc "which ${name}"`, {
+    if (process.platform === "win32") {
+      const output = execFileSync("where.exe", [name], {
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      const binPath = output.split("\n").find((l) => l.trim().length > 0);
+      return binPath?.trim() || name;
+    }
+
+    const shell = process.env.SHELL || "/bin/sh";
+    const output = execFileSync(shell, ["-ilc", `which ${name}`], {
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
     });
