@@ -1,19 +1,25 @@
 // Types
 export type {
+  BeforeSendResult,
   ChatMessage,
   ChatPlugin,
   ChatSessionEvents,
   ChatSessionOptions,
   CLIProvider,
+  ErrorResult,
   MessageRole,
   OutputParser,
   ParsedEvent,
+  ParsedEventResult,
   ParsedEventType,
+  PluginManifest,
   PTYBackend,
   PTYHandle,
+  SendContext,
   SessionStatus,
   SpawnConfig,
   SpawnOptions,
+  ToolUseResult,
 } from "./types.js";
 
 export type { IPCTransport } from "./backends/ipc.js";
@@ -38,6 +44,7 @@ export { AnsiStripParser, StateMachineParser, stripAnsi } from "./parsers/ansi-s
 
 // Plugins
 export { PluginManager } from "./plugins/manager.js";
+export { createLogger } from "./plugins/logger.js";
 
 // Utils
 export { findBinary, buildFullPath } from "./providers/utils.js";

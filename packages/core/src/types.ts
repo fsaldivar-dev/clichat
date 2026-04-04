@@ -126,24 +126,79 @@ export interface PTYBackend {
 
 // ─── Plugin System ───────────────────────────────────────────────────────────
 
+export interface PluginManifest {
+  version: string;
+  description?: string;
+  /** Lower number = runs earlier. Default: 100 */
+  priority?: number;
+  /** Provider IDs this plugin supports. Omit = all providers. */
+  providers?: string[];
+  /** Plugin IDs this plugin depends on */
+  requires?: string[];
+  /** Capability tags this plugin provides */
+  provides?: string[];
+}
+
+export interface BeforeSendResult {
+  text: string;
+  cancel?: boolean;
+}
+
+export interface ParsedEventResult {
+  event: ParsedEvent;
+  cancel?: boolean;
+}
+
+export interface ToolUseResult {
+  allow: boolean;
+  input?: unknown;
+}
+
+export interface ErrorResult {
+  retry?: boolean;
+  handled?: boolean;
+}
+
+export interface SendContext {
+  messages: ReadonlyArray<ChatMessage>;
+  status: SessionStatus;
+  providerId: string;
+}
+
 export interface ChatPlugin {
   id: string;
   name: string;
+  manifest?: PluginManifest;
 
+  // ─── Lifecycle hooks (existing) ─────────────────────────────────────
   /** Called when a session starts */
   onSessionStart?(session: ChatSessionEvents): void | Promise<void>;
-
   /** Called when a session ends */
   onSessionEnd?(session: ChatSessionEvents): void | Promise<void>;
-
   /** Modify spawn options before the CLI process is created */
-  configureProvider?(
-    provider: CLIProvider,
-    options: SpawnOptions,
-  ): SpawnOptions | Promise<SpawnOptions>;
-
+  configureProvider?(provider: CLIProvider, options: SpawnOptions): SpawnOptions | Promise<SpawnOptions>;
   /** Transform a message before it's added to the message list */
   transformMessage?(message: ChatMessage): ChatMessage;
+
+  // ─── Message hooks (new) ────────────────────────────────────────────
+  /** Intercept/modify user input before sending. Return cancel:true to prevent send. */
+  onBeforeSend?(text: string, context: SendContext): BeforeSendResult | Promise<BeforeSendResult> | void;
+  /** Intercept parsed CLI events. Return cancel:true to skip processing. */
+  onParsedEvent?(event: ParsedEvent): ParsedEventResult | Promise<ParsedEventResult> | void;
+
+  // ─── Tool hooks (new) ───────────────────────────────────────────────
+  /** Intercept tool calls. Return allow:false to block. */
+  onToolUse?(toolName: string, input: unknown): ToolUseResult | Promise<ToolUseResult> | void;
+  /** Transform tool results before adding to context. */
+  onToolResult?(toolName: string, result: string): string | Promise<string> | void;
+
+  // ─── Error & status hooks (new) ─────────────────────────────────────
+  /** Handle errors. Return handled:true to suppress, retry:true to re-send. */
+  onError?(error: Error, context: SendContext): ErrorResult | Promise<ErrorResult> | void;
+  /** Observe status transitions (fire-and-forget). */
+  onStatusChange?(from: SessionStatus, to: SessionStatus): void;
+  /** Access raw CLI output before parsing (fire-and-forget). */
+  onRawOutput?(data: string): void;
 }
 
 // ─── Session Events (for plugin access) ──────────────────────────────────────
@@ -153,7 +208,17 @@ export interface ChatSessionEvents {
   on(event: "status", cb: (status: SessionStatus) => void): void;
   on(event: "raw", cb: (data: string) => void): void;
   on(event: "exit", cb: (code: number) => void): void;
+  on(event: "beforeSend", cb: (text: string, context: SendContext) => void): void;
+  on(event: "afterSend", cb: (text: string) => void): void;
+  on(event: "parsed", cb: (event: ParsedEvent) => void): void;
+  on(event: "toolUse", cb: (toolName: string, input: unknown) => void): void;
+  on(event: "toolResult", cb: (toolName: string, result: string) => void): void;
+  on(event: "error", cb: (error: Error) => void): void;
+  on(event: "statusChange", cb: (from: SessionStatus, to: SessionStatus) => void): void;
+  on(event: string, cb: (...args: unknown[]) => void): void;
   off(event: string, cb: (...args: unknown[]) => void): void;
+  /** Emit custom events for inter-plugin communication */
+  emitEvent(event: string, ...args: unknown[]): void;
 
   readonly messages: ReadonlyArray<ChatMessage>;
   readonly status: SessionStatus;
