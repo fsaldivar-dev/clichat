@@ -92,21 +92,21 @@ function parseStreamJsonLine(line: string): { type: ParsedEventType; role: Messa
     switch (json.type) {
       // ─── Claude --verbose stream-json format ───────────────────────
       // Events: {type:"assistant", message:{content:[{type:"thinking",...},{type:"text",text:"..."}]}}
+      // NOTE: Claude sends the FULL accumulated text each time (not deltas).
+      // We mark these with __replace__ prefix so the streaming logic replaces instead of appending.
       case "assistant": {
         const content = json.message?.content;
         if (!Array.isArray(content)) return null;
-        // Return the LAST meaningful block (text > tool_use > thinking)
-        // Claude sends the same message.id multiple times as content grows
         for (let i = content.length - 1; i >= 0; i--) {
           const block = content[i];
           if (block.type === "text" && block.text) {
-            return { type: "message", role: "assistant", content: block.text };
+            return { type: "message", role: "assistant", content: "__replace__" + block.text };
           }
           if (block.type === "tool_use") {
             return { type: "tool_use", role: "tool", content: JSON.stringify(block.input ?? ""), toolName: block.name };
           }
           if (block.type === "thinking" && block.thinking) {
-            return { type: "thinking", role: "assistant", content: block.thinking };
+            return { type: "thinking", role: "assistant", content: "__replace__" + block.thinking };
           }
         }
         return null;
@@ -307,8 +307,12 @@ function usePerMessageSession(provider: ProviderInfo) {
         }
 
         if (parsed.type === "message" || parsed.type === "thinking") {
+          // Handle __replace__ prefix: Claude sends full text each time, not deltas
+          const isReplace = parsed.content.startsWith("__replace__");
+          const content = isReplace ? parsed.content.slice(11) : parsed.content;
+
           if (streamMsg.current && streamMsg.current.type === parsed.type) {
-            streamMsg.current = { ...streamMsg.current, content: streamMsg.current.content + parsed.content };
+            streamMsg.current = { ...streamMsg.current, content: isReplace ? content : streamMsg.current.content + content };
           } else {
             // Flush previous streaming msg, start new one
             if (streamMsg.current) {
@@ -320,7 +324,7 @@ function usePerMessageSession(provider: ProviderInfo) {
               });
             }
             const newMsg: ChatMessage = {
-              id: mkId(), role: parsed.role, content: parsed.content,
+              id: mkId(), role: parsed.role, content: content,
               timestamp: Date.now(), type: parsed.type,
               metadata: { isStreaming: true, provider: provider.id },
             };
