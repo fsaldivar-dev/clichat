@@ -110,7 +110,7 @@ describe("ChatSession", () => {
       const messageHandler = vi.fn();
       session.on("message", messageHandler);
 
-      session.send("Hello");
+      await session.send("Hello");
 
       expect(messageHandler).toHaveBeenCalledTimes(1);
       const msg = messageHandler.mock.calls[0][0];
@@ -121,19 +121,19 @@ describe("ChatSession", () => {
 
     it("writes formatted input to handle", async () => {
       await session.start();
-      session.send("Hello");
+      await session.send("Hello");
       expect(handle.write).toHaveBeenCalledWith("Hello\n");
     });
 
-    it("does not send when handle is null", () => {
-      session.send("Hello");
+    it("does not send when handle is null", async () => {
+      await session.send("Hello");
       expect(handle.write).not.toHaveBeenCalled();
     });
 
     it("generates unique message IDs", async () => {
       await session.start();
-      session.send("First");
-      session.send("Second");
+      await session.send("First");
+      await session.send("Second");
 
       const ids = session.messages.map((m) => m.id);
       expect(new Set(ids).size).toBe(ids.length);
@@ -149,7 +149,7 @@ describe("ChatSession", () => {
 
     it("sets status to idle", async () => {
       await session.start();
-      session.send("Hello");
+      await session.send("Hello");
       session.abort();
       expect(session.status).toBe("idle");
     });
@@ -171,6 +171,9 @@ describe("ChatSession", () => {
 
       handle.triggerData("data");
 
+      // Wait for async output queue to process
+      await new Promise((r) => setTimeout(r, 10));
+
       expect(messageHandler).toHaveBeenCalled();
       expect(session.status).toBe("responding");
     });
@@ -185,6 +188,7 @@ describe("ChatSession", () => {
 
       await session.start();
       handle.triggerData("data");
+      await new Promise((r) => setTimeout(r, 10));
 
       expect(session.status).toBe("idle");
     });
@@ -220,8 +224,70 @@ describe("ChatSession", () => {
       await session.start();
 
       // send should not throw despite plugin error
-      session.send("Hello");
+      await session.send("Hello");
       expect(session.messages.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("plugin hooks (new)", () => {
+    it("onBeforeSend can cancel", async () => {
+      const cancelPlugin = {
+        id: "cancel", name: "Cancel",
+        onBeforeSend: vi.fn(() => ({ text: "modified", cancel: true })),
+      };
+      const session = new ChatSession({ provider, backend, plugins: [cancelPlugin] });
+      await session.start();
+      await session.send("Hello");
+
+      // Message should not be added because send was cancelled
+      expect(session.messages).toHaveLength(0);
+      expect(handle.write).not.toHaveBeenCalled();
+    });
+
+    it("onBeforeSend can modify text", async () => {
+      const modPlugin = {
+        id: "mod", name: "Modifier",
+        onBeforeSend: vi.fn((text: string) => ({ text: text.toUpperCase() })),
+      };
+      const session = new ChatSession({ provider, backend, plugins: [modPlugin] });
+      await session.start();
+      await session.send("hello");
+
+      expect(session.messages[0].content).toBe("HELLO");
+      expect(handle.write).toHaveBeenCalledWith("HELLO\n");
+    });
+
+    it("onStatusChange fires on transitions", async () => {
+      const statusPlugin = {
+        id: "status", name: "Status",
+        onStatusChange: vi.fn(),
+      };
+      const session = new ChatSession({ provider, backend, plugins: [statusPlugin] });
+      await session.start();
+      await session.send("Hello");
+
+      // idle → thinking
+      expect(statusPlugin.onStatusChange).toHaveBeenCalledWith("idle", "thinking");
+    });
+
+    it("emitEvent works for inter-plugin communication", async () => {
+      await session.start();
+      const handler = vi.fn();
+      session.on("custom:test", handler);
+      session.emitEvent("custom:test", "data");
+      expect(handler).toHaveBeenCalledWith("data");
+    });
+
+    it("plugins are sorted by priority", () => {
+      const order: string[] = [];
+      const p1 = { id: "p1", name: "P1", manifest: { version: "1", priority: 200 }, onStatusChange: () => { order.push("p1"); } };
+      const p2 = { id: "p2", name: "P2", manifest: { version: "1", priority: 10 }, onStatusChange: () => { order.push("p2"); } };
+      const session = new ChatSession({ provider, backend, plugins: [p1, p2] });
+
+      // Trigger status change by starting
+      session.start().then(() => {
+        expect(order[0]).toBe("p2"); // lower priority runs first
+      });
     });
   });
 });

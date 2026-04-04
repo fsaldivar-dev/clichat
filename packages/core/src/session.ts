@@ -9,7 +9,7 @@ import type {
   PTYHandle,
   SessionStatus,
   ParsedEvent,
-  ChatPlugin,
+  SendContext,
 } from "./types.js";
 import { PluginManager } from "./plugins/manager.js";
 
@@ -20,14 +20,18 @@ function generateId(): string {
 /**
  * ChatSession manages a single conversation with an AI CLI.
  *
- * It spawns the CLI process, feeds raw output through the provider's parser,
- * and emits structured chat events.
- *
  * Events:
  * - "message" (ChatMessage) — a new or updated message
  * - "status" (SessionStatus) — session status changed
- * - "raw" (string) — raw CLI output (escape hatch)
- * - "exit" (number) — CLI process exited with code
+ * - "raw" (string) — raw CLI output
+ * - "exit" (number) — CLI process exited
+ * - "beforeSend" (text, context) — before sending user message
+ * - "afterSend" (text) — after sending user message
+ * - "parsed" (ParsedEvent) — parsed CLI event
+ * - "toolUse" (toolName, input) — tool invocation
+ * - "toolResult" (toolName, result) — tool result
+ * - "error" (Error) — error occurred
+ * - "statusChange" (from, to) — status transition
  */
 export class ChatSession extends EventEmitter implements ChatSessionEvents {
   private _messages: ChatMessage[] = [];
@@ -39,6 +43,7 @@ export class ChatSession extends EventEmitter implements ChatSessionEvents {
   private _options: ChatSessionOptions;
   private _streamingMessage: ChatMessage | null = null;
   private _isFirstMessage = true;
+  private _outputQueue: Promise<void> = Promise.resolve();
 
   constructor(options: ChatSessionOptions) {
     super();
@@ -69,11 +74,19 @@ export class ChatSession extends EventEmitter implements ChatSessionEvents {
     return this._handle !== null && this._status !== "exited";
   }
 
+  /** Emit custom events for inter-plugin communication */
+  emitEvent(event: string, ...args: unknown[]): void {
+    this.emit(event, ...args);
+  }
+
   // ─── Lifecycle ───────────────────────────────────────────────────────────
 
   /** Start the session — spawn the CLI process */
   async start(): Promise<void> {
     if (this._handle) return;
+
+    // Set active provider for plugin filtering
+    this._pluginManager.setActiveProvider(this._provider.id);
 
     // Let plugins modify spawn options
     const spawnOptions = await this._pluginManager.configureProvider(
@@ -93,14 +106,14 @@ export class ChatSession extends EventEmitter implements ChatSessionEvents {
     // Spawn the process
     this._handle = await this._backend.spawn(config);
 
-    // Wire up data handling
+    // Wire up data handling with sequential queue for async hooks
     this._handle.onData((data) => {
       this.emit("raw", data);
-      this.handleOutput(data);
+      this._pluginManager.onRawOutput(data);
+      this._outputQueue = this._outputQueue.then(() => this.handleOutput(data));
     });
 
     this._handle.onExit((code) => {
-      // For per-message providers, process exit is normal (not terminal)
       if (this._provider.respawnOnSend) {
         this.flushStreamingMessage();
         this.setStatus("idle");
@@ -118,19 +131,26 @@ export class ChatSession extends EventEmitter implements ChatSessionEvents {
     await this._pluginManager.onSessionStart(this);
   }
 
-  /** Send a user message */
-  send(text: string): void {
-    // Per-message providers can send even when handle is null (they respawn)
+  /** Send a user message (async to support plugin hooks) */
+  async send(text: string): Promise<void> {
     if (!this._handle && !this._provider.respawnOnSend) return;
 
+    // Plugin hook: onBeforeSend — can modify text or cancel
+    const context = this.getSendContext();
+    const beforeResult = await this._pluginManager.onBeforeSend(text, context);
+    if (beforeResult.cancel) return;
+    const finalText = beforeResult.text;
+
+    this.emit("beforeSend", finalText, context);
+
     // Add user message to history
-    const msg = this.createMessage("user", text, "message");
+    const msg = this.createMessage("user", finalText, "message");
     this._messages.push(msg);
     this.emit("message", msg);
 
     this.setStatus("thinking");
 
-    // Per-message spawn mode: kill current process, spawn new one
+    // Per-message spawn mode
     if (this._provider.respawnOnSend) {
       this.flushStreamingMessage();
       this._provider.parser.reset();
@@ -144,41 +164,42 @@ export class ChatSession extends EventEmitter implements ChatSessionEvents {
         permissionMode: this._options.permissionMode,
         maxTurns: this._options.maxTurns,
       };
-      const configPromise = Promise.resolve(
-        this._provider.respawnOnSend(text, this._isFirstMessage, spawnOptions),
+      const config = await Promise.resolve(
+        this._provider.respawnOnSend(finalText, this._isFirstMessage, spawnOptions),
       );
       this._isFirstMessage = false;
-      configPromise.then(async (config) => {
-        // Kill previous process
-        if (this._handle) {
-          this._handle.kill();
-          this._handle = null;
-        }
-        // Spawn new process for this message
-        this._handle = await this._backend.spawn(config);
-        this._handle.onData((data) => {
-          this.emit("raw", data);
-          this.handleOutput(data);
-        });
-        this._handle.onExit((code) => {
-          // Per-message: process exit means response is done, go idle (not exited)
-          this.flushStreamingMessage();
-          this.setStatus("idle");
-          this.emit("exit", code);
-        });
+
+      if (this._handle) {
+        this._handle.kill();
+        this._handle = null;
+      }
+
+      this._handle = await this._backend.spawn(config);
+      this._handle.onData((data) => {
+        this.emit("raw", data);
+        this._pluginManager.onRawOutput(data);
+        this._outputQueue = this._outputQueue.then(() => this.handleOutput(data));
       });
+      this._handle.onExit((code) => {
+        this.flushStreamingMessage();
+        this.setStatus("idle");
+        this.emit("exit", code);
+      });
+
+      this.emit("afterSend", finalText);
       return;
     }
 
-    // Interactive mode: write to existing process
-    const formatted = this._provider.formatInput(text);
+    // Interactive mode
+    const formatted = this._provider.formatInput(finalText);
     this._handle!.write(formatted);
+    this.emit("afterSend", finalText);
   }
 
   /** Abort current operation (sends Ctrl+C) */
   abort(): void {
     if (!this._handle) return;
-    this._handle.write("\x03"); // Ctrl+C
+    this._handle.write("\x03");
     this.flushStreamingMessage();
     this.setStatus("idle");
   }
@@ -202,76 +223,103 @@ export class ChatSession extends EventEmitter implements ChatSessionEvents {
 
   // ─── Private ─────────────────────────────────────────────────────────────
 
-  private handleOutput(data: string): void {
+  private async handleOutput(data: string): Promise<void> {
     const events = this._provider.parser.feed(data);
 
     for (const event of events) {
-      this.handleParsedEvent(event);
+      await this.handleParsedEvent(event);
     }
   }
 
-  private handleParsedEvent(event: ParsedEvent): void {
-    switch (event.type) {
+  private async handleParsedEvent(event: ParsedEvent): Promise<void> {
+    // Plugin hook: onParsedEvent — can modify or cancel
+    const result = await this._pluginManager.onParsedEvent(event);
+    if (result.cancel) return;
+    const ev = result.event;
+
+    this.emit("parsed", ev);
+
+    switch (ev.type) {
       case "message":
-        if (event.metadata?.isStreaming) {
-          this.appendToStreamingMessage(event);
+        if (ev.metadata?.isStreaming) {
+          this.appendToStreamingMessage(ev);
           this.setStatus("responding");
         } else {
           this.flushStreamingMessage();
-          const msg = this.createMessage(event.role, event.content, "message");
+          const msg = this.createMessage(ev.role, ev.content, "message");
           this.addMessage(msg);
         }
         break;
 
       case "thinking":
         this.setStatus("thinking");
-        if (event.metadata?.isStreaming) {
-          this.appendToStreamingMessage(event);
+        if (ev.metadata?.isStreaming) {
+          this.appendToStreamingMessage(ev);
         } else {
-          const msg = this.createMessage(event.role, event.content, "thinking");
+          const msg = this.createMessage(ev.role, ev.content, "thinking");
           this.addMessage(msg);
         }
         break;
 
-      case "tool_use":
+      case "tool_use": {
+        // Plugin hook: onToolUse — can block
+        const toolName = ev.metadata?.toolName ?? "unknown";
+        const toolResult = await this._pluginManager.onToolUse(toolName, ev.metadata?.toolInput);
+        this.emit("toolUse", toolName, ev.metadata?.toolInput);
+
+        if (!toolResult.allow) break; // blocked by plugin
+
         this.setStatus("tool_use");
         this.flushStreamingMessage();
-        const toolMsg = this.createMessage(event.role, event.content, "tool_use");
-        if (event.metadata?.toolName) {
-          toolMsg.metadata = { ...toolMsg.metadata, toolName: event.metadata.toolName };
+        const toolMsg = this.createMessage(ev.role, ev.content, "tool_use");
+        if (ev.metadata?.toolName) {
+          toolMsg.metadata = { ...toolMsg.metadata, toolName: ev.metadata.toolName };
         }
         this.addMessage(toolMsg);
         break;
+      }
 
-      case "tool_result":
+      case "tool_result": {
+        // Plugin hook: onToolResult — can transform
+        const trName = ev.metadata?.toolName ?? "unknown";
+        const transformedResult = await this._pluginManager.onToolResult(trName, ev.content);
+        this.emit("toolResult", trName, transformedResult);
+
         this.flushStreamingMessage();
-        const resultMsg = this.createMessage(event.role, event.content, "tool_result");
+        const resultMsg = this.createMessage(ev.role, transformedResult, "tool_result");
         this.addMessage(resultMsg);
         break;
+      }
 
-      case "error":
+      case "error": {
+        // Plugin hook: onError — can handle or request retry
+        const error = new Error(ev.content);
+        const errResult = await this._pluginManager.onError(error, this.getSendContext());
+        this.emit("error", error);
+
+        if (errResult.handled) break; // suppressed by plugin
+
         this.setStatus("error");
         this.flushStreamingMessage();
-        const errMsg = this.createMessage("system", event.content, "error");
+        const errMsg = this.createMessage("system", ev.content, "error");
         this.addMessage(errMsg);
         break;
+      }
 
       case "status":
-        if (event.content === "message_stop") {
+        if (ev.content === "message_stop") {
           this.flushStreamingMessage();
           this.setStatus("idle");
         }
         break;
 
       case "raw":
-        // Already emitted via "raw" event in handleOutput
         break;
     }
   }
 
   private appendToStreamingMessage(event: ParsedEvent): void {
     if (this._streamingMessage && this._streamingMessage.type === event.type) {
-      // Append to existing streaming message
       this._streamingMessage.content += event.content;
       this._streamingMessage.metadata = {
         ...this._streamingMessage.metadata,
@@ -279,7 +327,6 @@ export class ChatSession extends EventEmitter implements ChatSessionEvents {
       };
       this.emit("message", this._streamingMessage);
     } else {
-      // Start new streaming message
       this.flushStreamingMessage();
       this._streamingMessage = this.createMessage(event.role, event.content, event.type);
       this._streamingMessage.metadata = {
@@ -325,8 +372,19 @@ export class ChatSession extends EventEmitter implements ChatSessionEvents {
 
   private setStatus(status: SessionStatus): void {
     if (this._status !== status) {
+      const from = this._status;
       this._status = status;
+      this._pluginManager.onStatusChange(from, status);
       this.emit("status", status);
+      this.emit("statusChange", from, status);
     }
+  }
+
+  private getSendContext(): SendContext {
+    return {
+      messages: this._messages,
+      status: this._status,
+      providerId: this._provider.id,
+    };
   }
 }
