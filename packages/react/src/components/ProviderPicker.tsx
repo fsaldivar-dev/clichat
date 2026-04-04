@@ -11,10 +11,11 @@ export function ProviderPicker({ providers, onSelect, contextHint }: ProviderPic
   return (
     <div className="clichat-picker">
       <p className="clichat-picker__hint">Choose a provider:</p>
-      <div className="clichat-picker__options">
+      <div className="clichat-picker__options" role="group" aria-label="Provider options">
         {providers.map((provider) => (
           <button
             key={provider.id}
+            type="button"
             className="clichat-picker__option"
             onClick={() => onSelect(provider)}
           >

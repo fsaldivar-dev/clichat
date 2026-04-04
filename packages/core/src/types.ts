@@ -73,6 +73,10 @@ export interface SpawnConfig {
   args: string[];
   env?: Record<string, string>;
   cwd?: string;
+  /** Initial PTY columns (default: process.stdout.columns ?? 80) */
+  cols?: number;
+  /** Initial PTY rows (default: process.stdout.rows ?? 24) */
+  rows?: number;
   /** Pre-spawn setup (e.g., MCP config injection) */
   setup?: () => Promise<void>;
   /** Use child_process.spawn instead of node-pty (for structured I/O) */
@@ -92,6 +96,12 @@ export interface CLIProvider {
 
   /** Format user input before sending to CLI (default: text + \n) */
   formatInput(text: string): string;
+
+  /**
+   * Per-message spawn mode: if defined, each send() kills the current process
+   * and spawns a new one with these args. Used by Claude CLI's `-p` print mode.
+   */
+  respawnOnSend?(text: string, isFirst: boolean, options: SpawnOptions): SpawnConfig | Promise<SpawnConfig>;
 }
 
 // ─── PTY Backend ─────────────────────────────────────────────────────────────

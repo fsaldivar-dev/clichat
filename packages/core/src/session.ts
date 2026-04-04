@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import type {
   ChatMessage,
   ChatSessionOptions,
@@ -12,10 +13,8 @@ import type {
 } from "./types.js";
 import { PluginManager } from "./plugins/manager.js";
 
-let nextId = 1;
-
 function generateId(): string {
-  return `msg_${Date.now()}_${nextId++}`;
+  return `msg_${randomUUID()}`;
 }
 
 /**
@@ -39,6 +38,7 @@ export class ChatSession extends EventEmitter implements ChatSessionEvents {
   private _pluginManager: PluginManager;
   private _options: ChatSessionOptions;
   private _streamingMessage: ChatMessage | null = null;
+  private _isFirstMessage = true;
 
   constructor(options: ChatSessionOptions) {
     super();
@@ -63,6 +63,9 @@ export class ChatSession extends EventEmitter implements ChatSessionEvents {
   }
 
   get isAlive(): boolean {
+    if (this._provider.respawnOnSend) {
+      return this._status !== "exited";
+    }
     return this._handle !== null && this._status !== "exited";
   }
 
@@ -97,10 +100,16 @@ export class ChatSession extends EventEmitter implements ChatSessionEvents {
     });
 
     this._handle.onExit((code) => {
-      this.setStatus("exited");
-      this._handle = null;
-      this.flushStreamingMessage();
-      this.emit("exit", code);
+      // For per-message providers, process exit is normal (not terminal)
+      if (this._provider.respawnOnSend) {
+        this.flushStreamingMessage();
+        this.setStatus("idle");
+      } else {
+        this.setStatus("exited");
+        this._handle = null;
+        this.flushStreamingMessage();
+        this.emit("exit", code);
+      }
     });
 
     this.setStatus("idle");
@@ -111,18 +120,56 @@ export class ChatSession extends EventEmitter implements ChatSessionEvents {
 
   /** Send a user message */
   send(text: string): void {
-    if (!this._handle) return;
+    // Per-message providers can send even when handle is null (they respawn)
+    if (!this._handle && !this._provider.respawnOnSend) return;
 
     // Add user message to history
     const msg = this.createMessage("user", text, "message");
     this._messages.push(msg);
     this.emit("message", msg);
 
-    // Format and write to CLI
-    const formatted = this._provider.formatInput(text);
-    this._handle.write(formatted);
-
     this.setStatus("thinking");
+
+    // Per-message spawn mode: kill current process, spawn new one
+    if (this._provider.respawnOnSend) {
+      this.flushStreamingMessage();
+      this._provider.parser.reset();
+      const spawnOptions = {
+        cwd: this._options.cwd ?? process.cwd(),
+        initialPrompt: this._options.initialPrompt,
+        model: this._options.model,
+        systemPrompt: this._options.systemPrompt,
+        env: this._options.env,
+      };
+      const configPromise = Promise.resolve(
+        this._provider.respawnOnSend(text, this._isFirstMessage, spawnOptions),
+      );
+      this._isFirstMessage = false;
+      configPromise.then(async (config) => {
+        // Kill previous process
+        if (this._handle) {
+          this._handle.kill();
+          this._handle = null;
+        }
+        // Spawn new process for this message
+        this._handle = await this._backend.spawn(config);
+        this._handle.onData((data) => {
+          this.emit("raw", data);
+          this.handleOutput(data);
+        });
+        this._handle.onExit((code) => {
+          // Per-message: process exit means response is done, go idle (not exited)
+          this.flushStreamingMessage();
+          this.setStatus("idle");
+          this.emit("exit", code);
+        });
+      });
+      return;
+    }
+
+    // Interactive mode: write to existing process
+    const formatted = this._provider.formatInput(text);
+    this._handle!.write(formatted);
   }
 
   /** Abort current operation (sends Ctrl+C) */

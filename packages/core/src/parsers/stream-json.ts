@@ -1,4 +1,4 @@
-import type { OutputParser, ParsedEvent, ParsedEventType, MessageRole } from "../types.js";
+import type { OutputParser, ParsedEvent } from "../types.js";
 
 /**
  * Parser for Claude CLI's `--output-format stream-json` mode.
@@ -54,27 +54,27 @@ export class StreamJsonParser implements OutputParser {
         const delta = json.delta as Record<string, unknown> | undefined;
         if (!delta) return null;
 
-        if (delta.type === "text_delta") {
+        if (delta.type === "text_delta" && typeof delta.text === "string") {
           return {
             type: "message",
             role: "assistant",
-            content: delta.text as string,
+            content: delta.text,
             metadata: { isStreaming: true },
           };
         }
-        if (delta.type === "thinking_delta") {
+        if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
           return {
             type: "thinking",
             role: "assistant",
-            content: delta.thinking as string,
+            content: delta.thinking,
             metadata: { isStreaming: true },
           };
         }
-        if (delta.type === "input_json_delta") {
+        if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
           return {
             type: "tool_use",
             role: "tool",
-            content: delta.partial_json as string,
+            content: delta.partial_json,
             metadata: { isStreaming: true },
           };
         }
@@ -91,7 +91,7 @@ export class StreamJsonParser implements OutputParser {
             role: "tool",
             content: "",
             metadata: {
-              toolName: block.name as string,
+              toolName: typeof block.name === "string" ? block.name : "unknown",
               isStreaming: true,
             },
           };
@@ -128,6 +128,34 @@ export class StreamJsonParser implements OutputParser {
           content: "message_stop",
         };
 
+      // Claude --verbose format: full assistant message with content blocks
+      case "assistant": {
+        const message = json.message as Record<string, unknown> | undefined;
+        if (!message) return null;
+        const content = message.content as Array<Record<string, unknown>> | undefined;
+        if (!Array.isArray(content)) return null;
+
+        // Return the last meaningful block (text > tool_use > thinking)
+        for (let i = content.length - 1; i >= 0; i--) {
+          const block = content[i];
+          if (block.type === "text" && typeof block.text === "string") {
+            return { type: "message", role: "assistant", content: block.text };
+          }
+          if (block.type === "tool_use") {
+            return {
+              type: "tool_use",
+              role: "tool",
+              content: typeof block.input === "string" ? block.input : JSON.stringify(block.input ?? ""),
+              metadata: { toolName: typeof block.name === "string" ? block.name : "unknown" },
+            };
+          }
+          if (block.type === "thinking" && typeof block.thinking === "string") {
+            return { type: "thinking", role: "assistant", content: block.thinking };
+          }
+        }
+        return null;
+      }
+
       // Claude --print mode result
       case "result": {
         const result = json.result as string | undefined;
@@ -142,7 +170,7 @@ export class StreamJsonParser implements OutputParser {
         const content = json.content as Array<Record<string, unknown>> | undefined;
         if (Array.isArray(content)) {
           const text = content
-            .filter((b) => b.type === "text")
+            .filter((b) => b.type === "text" && typeof b.text === "string")
             .map((b) => b.text as string)
             .join("");
           if (text) {
@@ -155,24 +183,5 @@ export class StreamJsonParser implements OutputParser {
       default:
         return null;
     }
-  }
-}
-
-/** Map Claude stream-json event type to our ParsedEventType */
-function mapEventType(type: string): ParsedEventType {
-  switch (type) {
-    case "text":
-    case "text_delta":
-      return "message";
-    case "thinking":
-    case "thinking_delta":
-      return "thinking";
-    case "tool_use":
-    case "input_json_delta":
-      return "tool_use";
-    case "tool_result":
-      return "tool_result";
-    default:
-      return "status";
   }
 }

@@ -1,10 +1,12 @@
 import type { CLIProvider, SpawnConfig, SpawnOptions } from "../types.js";
 import { StreamJsonParser } from "../parsers/stream-json.js";
+import { AnsiStripParser } from "../parsers/ansi-strip.js";
 import { findBinary, buildFullPath } from "./utils.js";
 
 /**
- * Claude CLI provider using structured JSON I/O.
- * Spawns `claude` with `--output-format stream-json` for reliable parsing.
+ * Claude CLI provider using per-message spawn with structured JSON output.
+ * Each send() spawns `claude -p "msg" --verbose --output-format stream-json`.
+ * Uses `--continue` after the first message to maintain conversation context.
  */
 export const claudeProvider: CLIProvider = {
   id: "claude",
@@ -12,8 +14,23 @@ export const claudeProvider: CLIProvider = {
   icon: "◇",
 
   async spawn(options: SpawnOptions): Promise<SpawnConfig> {
+    // Initial spawn: just `true` — a no-op process that exits immediately.
+    // Real work happens in respawnOnSend() which spawns per message.
+    return {
+      command: "true",
+      args: [],
+      cwd: options.cwd,
+      env: {
+        ...options.env,
+        PATH: buildFullPath(),
+      },
+      useChildProcess: true,
+    };
+  },
+
+  respawnOnSend(text: string, isFirst: boolean, options: SpawnOptions): SpawnConfig {
     const claudeBin = findBinary("claude");
-    const args = ["--output-format", "stream-json"];
+    const args = ["-p", text, "--output-format", "stream-json", "--verbose"];
 
     if (options.model) {
       args.push("--model", options.model);
@@ -23,8 +40,8 @@ export const claudeProvider: CLIProvider = {
       args.push("--system-prompt", options.systemPrompt);
     }
 
-    if (options.initialPrompt) {
-      args.push("--print", options.initialPrompt);
+    if (!isFirst) {
+      args.push("--continue");
     }
 
     return {
@@ -36,7 +53,6 @@ export const claudeProvider: CLIProvider = {
         TERM: "xterm-256color",
         PATH: buildFullPath(),
       },
-      // Structured I/O — can use child_process instead of node-pty
       useChildProcess: true,
     };
   },
@@ -50,7 +66,8 @@ export const claudeProvider: CLIProvider = {
 
 /**
  * Claude CLI provider in interactive (PTY) mode.
- * Uses ANSI terminal output — less reliable but supports full interactive features.
+ * Keeps a single long-lived process with raw ANSI output.
+ * Best used with a RawTerminal component for full terminal emulation.
  */
 export const claudeInteractiveProvider: CLIProvider = {
   id: "claude-interactive",
@@ -59,11 +76,9 @@ export const claudeInteractiveProvider: CLIProvider = {
 
   async spawn(options: SpawnOptions): Promise<SpawnConfig> {
     const claudeBin = findBinary("claude");
-    const args: string[] = [];
-
     return {
       command: claudeBin,
-      args,
+      args: [],
       cwd: options.cwd,
       env: {
         ...options.env,
@@ -74,7 +89,6 @@ export const claudeInteractiveProvider: CLIProvider = {
     };
   },
 
-  // Interactive mode uses raw ANSI — consumers should use RawTerminal component
-  parser: new StreamJsonParser(), // placeholder, won't be used in raw mode
-  formatInput: (text) => text,
+  parser: new AnsiStripParser(),
+  formatInput: (text) => text + "\n",
 };

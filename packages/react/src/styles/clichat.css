@@ -218,6 +218,7 @@
   resize: none;
   outline: none;
   max-height: 120px;
+  overflow-y: auto;
 }
 
 .clichat-input__textarea::placeholder {
@@ -326,4 +327,36 @@
 .clichat-picker__context {
   color: var(--clichat-text-muted);
   font-size: 12px;
+}
+
+/* ─── Responsive ─────────────────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .clichat-bubble {
+    max-width: 95%;
+  }
+
+  .clichat-container__messages {
+    padding: 8px;
+    gap: 8px;
+  }
+
+  .clichat-container__footer {
+    padding: 8px;
+  }
+
+  .clichat-picker {
+    padding: 16px;
+    gap: 12px;
+  }
+
+  .clichat-picker__options {
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .clichat-picker__option {
+    width: 100%;
+    justify-content: center;
+  }
 }
