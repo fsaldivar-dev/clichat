@@ -113,6 +113,30 @@ html, body, #root {
   animation: pulse 2s ease-in-out infinite;
 }
 
+.demo-model-select,
+.demo-permission-select {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--clichat-fg);
+  border: 1px solid var(--clichat-border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-family: var(--clichat-font-mono);
+  cursor: pointer;
+  margin-left: 8px;
+}
+
+.demo-model-select:hover,
+.demo-permission-select:hover {
+  border-color: var(--clichat-accent);
+}
+
+.demo-model-select:focus,
+.demo-permission-select:focus {
+  outline: none;
+  border-color: var(--clichat-accent);
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }

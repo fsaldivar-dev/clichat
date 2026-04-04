@@ -140,6 +140,9 @@ export class ChatSession extends EventEmitter implements ChatSessionEvents {
         model: this._options.model,
         systemPrompt: this._options.systemPrompt,
         env: this._options.env,
+        allowedTools: this._options.allowedTools,
+        permissionMode: this._options.permissionMode,
+        maxTurns: this._options.maxTurns,
       };
       const configPromise = Promise.resolve(
         this._provider.respawnOnSend(text, this._isFirstMessage, spawnOptions),

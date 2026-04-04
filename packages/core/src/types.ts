@@ -66,6 +66,12 @@ export interface SpawnOptions {
   model?: string;
   systemPrompt?: string;
   env?: Record<string, string>;
+  /** Tools allowed to run without confirmation (Claude: --allowedTools, Gemini: --allowed-tools) */
+  allowedTools?: string[];
+  /** Permission/approval mode (Claude: --permission-mode, Gemini: --approval-mode) */
+  permissionMode?: string;
+  /** Maximum number of agentic turns */
+  maxTurns?: number;
 }
 
 export interface SpawnConfig {
@@ -165,4 +171,7 @@ export interface ChatSessionOptions {
   model?: string;
   systemPrompt?: string;
   env?: Record<string, string>;
+  allowedTools?: string[];
+  permissionMode?: string;
+  maxTurns?: number;
 }

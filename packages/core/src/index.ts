@@ -27,12 +27,13 @@ export { IPCPTYBackend } from "./backends/ipc.js";
 
 // Providers
 export { claudeProvider, claudeInteractiveProvider } from "./providers/claude.js";
-export { geminiProvider } from "./providers/gemini.js";
+export { geminiProvider, geminiInteractiveProvider } from "./providers/gemini.js";
 export { shellProvider } from "./providers/shell.js";
 export { registerProvider, getProvider, getProviders } from "./providers/registry.js";
 
 // Parsers
 export { StreamJsonParser } from "./parsers/stream-json.js";
+export { GeminiJsonParser } from "./parsers/gemini-json.js";
 export { AnsiStripParser, StateMachineParser, stripAnsi } from "./parsers/ansi-strip.js";
 
 // Plugins
