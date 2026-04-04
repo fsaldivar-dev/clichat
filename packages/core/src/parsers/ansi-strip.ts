@@ -1,7 +1,8 @@
 import type { OutputParser, ParsedEvent } from "../types.js";
 
-// Match ANSI escape sequences: CSI (ESC[), OSC (ESC]), and simple escapes
-const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]|\x1b[=>]/g;
+// Match ANSI escape sequences: CSI (ESC[ with optional DEC private mode ?/>/=),
+// OSC (ESC] terminated by BEL or ST), charset designation, and simple escapes
+const ANSI_RE = /\x1b\[[?>=]?[0-9;]*[A-Za-z]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[()][AB012]|\x1b[=>]/g;
 
 /** Strip all ANSI escape codes from a string */
 export function stripAnsi(text: string): string {

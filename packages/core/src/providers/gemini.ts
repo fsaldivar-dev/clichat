@@ -19,6 +19,8 @@ class GeminiParser extends StateMachineParser {
 
     // Gemini prompt marker (✦) — boundary between exchanges
     if (trimmed.startsWith("✦")) {
+      // Reset before setting — ensures proper state between conversation turns
+      this.seenPrompt = false;
       this.seenPrompt = true;
       return "boundary";
     }

@@ -14,8 +14,8 @@ export const shellProvider: CLIProvider = {
   async spawn(options: SpawnOptions): Promise<SpawnConfig> {
     const shell =
       process.platform === "win32"
-        ? "powershell.exe"
-        : process.env.SHELL || "/bin/zsh";
+        ? process.env.ComSpec || "cmd.exe"
+        : process.env.SHELL || "/bin/sh";
 
     return {
       command: shell,
