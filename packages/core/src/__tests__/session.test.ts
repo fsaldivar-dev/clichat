@@ -278,16 +278,15 @@ describe("ChatSession", () => {
       expect(handler).toHaveBeenCalledWith("data");
     });
 
-    it("plugins are sorted by priority", () => {
+    it("plugins are sorted by priority", async () => {
       const order: string[] = [];
       const p1 = { id: "p1", name: "P1", manifest: { version: "1", priority: 200 }, onStatusChange: () => { order.push("p1"); } };
       const p2 = { id: "p2", name: "P2", manifest: { version: "1", priority: 10 }, onStatusChange: () => { order.push("p2"); } };
       const session = new ChatSession({ provider, backend, plugins: [p1, p2] });
 
-      // Trigger status change by starting
-      session.start().then(() => {
-        expect(order[0]).toBe("p2"); // lower priority runs first
-      });
+      await session.start();
+      await session.send("test"); // idle → thinking triggers onStatusChange
+      expect(order[0]).toBe("p2"); // lower priority runs first
     });
   });
 });
