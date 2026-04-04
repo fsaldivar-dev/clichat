@@ -30,6 +30,9 @@ interface ProviderInfo {
   mode: "per-message" | "pty";
   command: string;
   baseArgs: string[];
+  models?: string[];
+  defaultModel?: string;
+  permissionModes?: string[];
 }
 
 // ─── Providers ───────────────────────────────────────────────────────────────
@@ -41,16 +44,21 @@ const PROVIDERS: ProviderInfo[] = [
     icon: "◇",
     mode: "per-message",
     command: "claude",
-    // -p = print mode, --output-format stream-json requires --verbose
     baseArgs: ["-p", "--output-format", "stream-json", "--verbose"],
+    models: ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
+    defaultModel: "claude-sonnet-4-6",
+    permissionModes: ["default", "plan"],
   },
   {
     id: "gemini",
     label: "Gemini CLI",
     icon: "✦",
-    mode: "pty",
+    mode: "per-message",
     command: "gemini",
-    baseArgs: [],
+    baseArgs: ["-p", "--output-format", "stream-json"],
+    models: ["gemini-3-flash-preview", "gemini-2.5-pro"],
+    defaultModel: "gemini-3-flash-preview",
+    permissionModes: ["default", "auto_edit", "yolo", "plan"],
   },
   {
     id: "shell",
@@ -330,7 +338,7 @@ function usePerMessageSession(provider: ProviderInfo) {
     return () => window.removeEventListener("message", handleMessage);
   }, [provider]);
 
-  const send = useCallback((text: string) => {
+  const send = useCallback((text: string, opts?: { model?: string; permissionMode?: string }) => {
     // Add user message
     setMessages(prev => [...prev, {
       id: mkId(), role: "user", content: text,
@@ -343,8 +351,26 @@ function usePerMessageSession(provider: ProviderInfo) {
 
     // Build args: claude -p "message" --output-format stream-json [--continue]
     const args = [...provider.baseArgs, text];
+
+    if (opts?.model) {
+      args.push("--model", opts.model);
+    }
+
+    if (opts?.permissionMode && opts.permissionMode !== "default") {
+      // Claude uses --permission-mode, Gemini uses --approval-mode
+      if (provider.id === "gemini") {
+        args.push("--approval-mode", opts.permissionMode);
+      } else {
+        args.push("--permission-mode", opts.permissionMode);
+      }
+    }
+
     if (!isFirstMessage.current) {
-      args.push("--continue");
+      if (provider.id === "gemini") {
+        args.push("--resume", "latest");
+      } else {
+        args.push("--continue");
+      }
     }
     isFirstMessage.current = false;
 
@@ -527,7 +553,7 @@ function ChatInput({ onSend, disabled, placeholder }: { onSend: (t: string) => v
         placeholder={disabled ? "Session ended" : placeholder ?? "Type a message..."} disabled={disabled} rows={1}
       />
       <button className="clichat-input__send" onClick={handleSubmit} disabled={disabled || !value.trim()}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
           <path d="M22 2L11 13" /><path d="M22 2L15 22L11 13L2 9L22 2Z" />
         </svg>
       </button>
@@ -548,11 +574,17 @@ function ChatView({ provider, onBack }: { provider: ProviderInfo; onBack: () => 
   const isAlive = isPTY ? pty.isAlive : true;
 
   const [showTerminal, setShowTerminal] = useState(true);
+  const [selectedModel, setSelectedModel] = useState(provider.defaultModel ?? "");
+  const [permissionMode, setPermissionMode] = useState("default");
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [messages, status]);
+
+  const sendWithOpts = useCallback((text: string) => {
+    send(text, { model: selectedModel || undefined, permissionMode });
+  }, [send, selectedModel, permissionMode]);
 
   const isActive = status === "thinking" || status === "responding" || status === "tool_use";
 
@@ -563,6 +595,33 @@ function ChatView({ provider, onBack }: { provider: ProviderInfo; onBack: () => 
         <span className="demo-provider-icon">{provider.icon}</span>
         <span className="demo-provider-label">{provider.label}</span>
         {isAlive && <span className="demo-alive">●</span>}
+
+        {provider.models && (
+          <select
+            className="demo-model-select"
+            value={selectedModel}
+            onChange={e => setSelectedModel(e.target.value)}
+            title="Select model"
+          >
+            {provider.models.map(m => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        )}
+
+        {provider.permissionModes && (
+          <select
+            className="demo-permission-select"
+            value={permissionMode}
+            onChange={e => setPermissionMode(e.target.value)}
+            title="Approval mode"
+          >
+            {provider.permissionModes.map(m => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        )}
+
         <div style={{ flex: 1 }} />
         <button
           className={`terminal-toggle ${showTerminal ? "terminal-toggle--active" : ""}`}
@@ -582,8 +641,8 @@ function ChatView({ provider, onBack }: { provider: ProviderInfo; onBack: () => 
                   <div className="demo-empty-icon">{provider.icon}</div>
                   <p>Start a conversation with {provider.label}</p>
                   <div className="demo-suggestions">
-                    <button onClick={() => send("Hola! Que puedes hacer?")}>Que puedes hacer?</button>
-                    <button onClick={() => send("Cuentame un chiste")}>Cuentame un chiste</button>
+                    <button onClick={() => sendWithOpts("Hola! Que puedes hacer?")}>Que puedes hacer?</button>
+                    <button onClick={() => sendWithOpts("Cuentame un chiste")}>Cuentame un chiste</button>
                   </div>
                 </div>
               </div>
@@ -594,7 +653,7 @@ function ChatView({ provider, onBack }: { provider: ProviderInfo; onBack: () => 
           <div className="chat-panel__footer">
             <StatusIndicator status={status} />
             <ChatInput
-              onSend={send}
+              onSend={sendWithOpts}
               disabled={status === "exited"}
               placeholder={`Message ${provider.label}...`}
             />
