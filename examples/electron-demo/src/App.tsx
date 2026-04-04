@@ -293,13 +293,12 @@ function usePerMessageSession(provider: ProviderInfo) {
 
         if (parsed.type === "status" && parsed.content === "__stop__") {
           if (streamMsg.current) {
-            streamMsg.current = { ...streamMsg.current, metadata: { ...streamMsg.current.metadata, isStreaming: false } };
-            setMessages(prev => {
-              const copy = [...prev];
-              copy[copy.length - 1] = { ...streamMsg.current! };
-              return copy;
-            });
+            const finalMsg = { ...streamMsg.current, metadata: { ...streamMsg.current.metadata, isStreaming: false } };
             streamMsg.current = null;
+            setMessages(prev => {
+              // Find and update the streaming message by id
+              return prev.map(m => m.id === finalMsg.id ? finalMsg : m);
+            });
           }
           setStatus("idle");
           continue;
@@ -311,16 +310,16 @@ function usePerMessageSession(provider: ProviderInfo) {
           const content = isReplace ? parsed.content.slice(11) : parsed.content;
 
           if (streamMsg.current && streamMsg.current.type === parsed.type) {
+            // Append or replace content in existing streaming message
             streamMsg.current = { ...streamMsg.current, content: isReplace ? content : streamMsg.current.content + content };
+            const updated = { ...streamMsg.current };
+            setMessages(prev => prev.map(m => m.id === updated.id ? updated : m));
           } else {
             // Flush previous streaming msg, start new one
             if (streamMsg.current) {
-              streamMsg.current = { ...streamMsg.current, metadata: { ...streamMsg.current.metadata, isStreaming: false } };
-              setMessages(prev => {
-                const copy = [...prev];
-                copy[copy.length - 1] = { ...streamMsg.current! };
-                return copy;
-              });
+              const flushed = { ...streamMsg.current, metadata: { ...streamMsg.current.metadata, isStreaming: false } };
+              streamMsg.current = null;
+              setMessages(prev => prev.map(m => m.id === flushed.id ? flushed : m));
             }
             const newMsg: ChatMessage = {
               id: mkId(), role: parsed.role, content: content,
@@ -330,11 +329,6 @@ function usePerMessageSession(provider: ProviderInfo) {
             streamMsg.current = newMsg;
             setMessages(prev => [...prev, newMsg]);
           }
-          setMessages(prev => {
-            const copy = [...prev];
-            copy[copy.length - 1] = { ...streamMsg.current! };
-            return copy;
-          });
           setStatus(parsed.type === "thinking" ? "thinking" : "responding");
         } else if (parsed.type === "tool_use") {
           setStatus("tool_use");
