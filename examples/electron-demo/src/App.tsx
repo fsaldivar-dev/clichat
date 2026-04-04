@@ -248,8 +248,7 @@ function usePerMessageSession(provider: ProviderInfo) {
   const streamMsg = useRef<ChatMessage | null>(null);
   const isFirstMessage = useRef(true);
   const seenMsgIds = useRef(new Set<string>());
-  const nextId = useRef(0);
-  const mkId = () => `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${nextId.current++}`;
+  const mkId = () => `msg_${crypto.randomUUID()}`;
 
   // Listen for data from the spawned process
   useEffect(() => {
@@ -417,8 +416,7 @@ function usePTYSession(provider: ProviderInfo, enabled: boolean) {
   const ansiBuf = useRef("");
   const ansiFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const streamMsg = useRef<ChatMessage | null>(null);
-  const nextId = useRef(0);
-  const mkId = () => `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${nextId.current++}`;
+  const mkId = () => `msg_${crypto.randomUUID()}`;
 
   useEffect(() => {
     if (!enabled) return;
