@@ -83,11 +83,17 @@ export function useChatSession(options: UseChatSessionOptions): UseChatSessionRe
       setIsAlive(false);
     });
 
-    await session.start();
-    setIsAlive(true);
-    setMessages([]);
-    setRawOutput("");
-    setStatus("idle");
+    try {
+      await session.start();
+      setIsAlive(true);
+      setMessages([]);
+      setRawOutput("");
+      setStatus("idle");
+    } catch (err) {
+      console.error("[clichat] session.start() failed:", err);
+      setIsAlive(false);
+      setStatus("error");
+    }
   }, [createSession]);
 
   const send = useCallback((text: string) => {

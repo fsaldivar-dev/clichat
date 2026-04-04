@@ -16,7 +16,7 @@
     "build": "tsup",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "echo 'Tests run from root via vitest workspace config'"
   },
   "peerDependencies": {
     "node-pty": ">=1.0.0"

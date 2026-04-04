@@ -105,13 +105,17 @@ export function createPTYHandler(ipcMain: IpcMain): void {
     ptyProcess.onData((data: string) => {
       try {
         ptyWebContents?.send("clichat:data", data);
-      } catch {}
+      } catch (err) {
+        console.error("[clichat/electron] failed to send data to renderer:", err);
+      }
     });
 
     ptyProcess.onExit(({ exitCode }: { exitCode: number }) => {
       try {
         ptyWebContents?.send("clichat:exit", exitCode);
-      } catch {}
+      } catch (err) {
+        console.error("[clichat/electron] failed to send exit to renderer:", err);
+      }
       ptyProcess = null;
     });
 

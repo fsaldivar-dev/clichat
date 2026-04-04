@@ -14,18 +14,33 @@ export class NodePTYBackend implements PTYBackend {
   }
 
   private async spawnPTY(config: SpawnConfig): Promise<PTYHandle> {
-    // Dynamic import to keep node-pty optional
-    const nodePty = await import("node-pty");
+    let nodePty: typeof import("node-pty");
+    try {
+      // Dynamic import to keep node-pty optional
+      nodePty = await import("node-pty");
+    } catch {
+      console.warn("[clichat] node-pty not available, falling back to child_process");
+      return this.spawnChildProcess(config);
+    }
 
     if (config.setup) await config.setup();
 
-    const ptyProcess = nodePty.spawn(config.command, config.args, {
-      name: "xterm-256color",
-      cols: 80,
-      rows: 24,
-      cwd: config.cwd,
-      env: config.env as Record<string, string>,
-    });
+    const cols = config.cols ?? (typeof process !== "undefined" ? process.stdout?.columns : undefined) ?? 80;
+    const rows = config.rows ?? (typeof process !== "undefined" ? process.stdout?.rows : undefined) ?? 24;
+
+    let ptyProcess: ReturnType<typeof nodePty.spawn>;
+    try {
+      ptyProcess = nodePty.spawn(config.command, config.args, {
+        name: "xterm-256color",
+        cols,
+        rows,
+        cwd: config.cwd,
+        env: config.env as Record<string, string>,
+      });
+    } catch (err) {
+      console.warn("[clichat] node-pty spawn failed, falling back to child_process:", (err as Error).message);
+      return this.spawnChildProcess(config);
+    }
 
     const dataCallbacks: Array<(data: string) => void> = [];
     const exitCallbacks: Array<(code: number) => void> = [];
@@ -70,6 +85,7 @@ export class NodePTYBackend implements PTYBackend {
 
     const dataCallbacks: Array<(data: string) => void> = [];
     const exitCallbacks: Array<(code: number) => void> = [];
+    let exited = false;
 
     child.stdout?.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8");
@@ -81,13 +97,26 @@ export class NodePTYBackend implements PTYBackend {
       for (const cb of dataCallbacks) cb(text);
     });
 
-    child.on("exit", (code) => {
+    child.on("error", (err) => {
+      if (exited) return;
+      exited = true;
+      for (const cb of dataCallbacks) cb(`Error: ${err.message}\n`);
+      for (const cb of exitCallbacks) cb(1);
+    });
+
+    child.on("close", (code) => {
+      if (exited) return;
+      exited = true;
       for (const cb of exitCallbacks) cb(code ?? 1);
     });
 
     return {
       write(data: string) {
-        child.stdin?.write(data);
+        try {
+          child.stdin?.write(data);
+        } catch {
+          // stdin closed (EPIPE) — ignore gracefully
+        }
       },
       resize() {
         // No resize for child_process
