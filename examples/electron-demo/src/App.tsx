@@ -55,7 +55,7 @@ const PROVIDERS: ProviderInfo[] = [
     icon: "✦",
     mode: "per-message",
     command: "gemini",
-    baseArgs: ["-p", "--output-format", "stream-json"],
+    baseArgs: ["--output-format", "stream-json", "-p"],
     models: ["gemini-3-flash-preview", "gemini-2.5-pro"],
     defaultModel: "gemini-3-flash-preview",
     permissionModes: ["default", "auto_edit", "yolo", "plan"],
