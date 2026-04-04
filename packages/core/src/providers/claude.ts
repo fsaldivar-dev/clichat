@@ -40,6 +40,18 @@ export const claudeProvider: CLIProvider = {
       args.push("--system-prompt", options.systemPrompt);
     }
 
+    if (options.allowedTools?.length) {
+      args.push("--allowedTools", options.allowedTools.join(","));
+    }
+
+    if (options.permissionMode) {
+      args.push("--permission-mode", options.permissionMode);
+    }
+
+    if (options.maxTurns) {
+      args.push("--max-turns", String(options.maxTurns));
+    }
+
     if (!isFirst) {
       args.push("--continue");
     }
