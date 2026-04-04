@@ -88,6 +88,7 @@ declare global {
 function parseStreamJsonLine(line: string): { type: ParsedEventType; role: MessageRole; content: string; toolName?: string } | null {
   try {
     const json = JSON.parse(line);
+    console.log("[parser] event:", json.type, json.role ?? "", typeof json.content === "string" ? json.content.slice(0, 60) : "");
     switch (json.type) {
       // ─── Claude --verbose stream-json format ───────────────────────
       // Events: {type:"assistant", message:{content:[{type:"thinking",...},{type:"text",text:"..."}]}}
@@ -111,10 +112,23 @@ function parseStreamJsonLine(line: string): { type: ParsedEventType; role: Messa
         return null;
       }
 
-      // Final result event
+      // ─── Gemini stream-json format ─────────────────────────────────
+      // Events: {type:"message", role:"assistant", content:"...", delta:true}
+      case "message": {
+        if (json.role === "user") return null; // skip user echo
+        if (json.role === "assistant" && typeof json.content === "string") {
+          return { type: "message", role: "assistant", content: json.content };
+        }
+        return null;
+      }
+
+      // Final result event (Claude: json.result, Gemini: json.status)
       case "result": {
+        // Claude format
         const content = json.result as string | undefined;
         if (content) return { type: "message", role: "assistant", content };
+        // Gemini format — just a status event, response already came via "message"
+        if (json.status === "success") return { type: "status", role: "system", content: "__stop__" };
         return null;
       }
 
