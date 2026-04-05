@@ -55,7 +55,7 @@ const PROVIDERS: ProviderInfo[] = [
     icon: "✦",
     mode: "per-message",
     command: "gemini",
-    baseArgs: ["-p", "--output-format", "stream-json"],
+    baseArgs: ["--output-format", "stream-json", "-p"],
     models: ["gemini-3-flash-preview", "gemini-2.5-pro"],
     defaultModel: "gemini-3-flash-preview",
     permissionModes: ["default", "auto_edit", "yolo", "plan"],
@@ -88,34 +88,46 @@ declare global {
 function parseStreamJsonLine(line: string): { type: ParsedEventType; role: MessageRole; content: string; toolName?: string } | null {
   try {
     const json = JSON.parse(line);
+    console.log("[parser] event:", json.type, json.role ?? "", typeof json.content === "string" ? json.content.slice(0, 60) : "");
     switch (json.type) {
       // ─── Claude --verbose stream-json format ───────────────────────
       // Events: {type:"assistant", message:{content:[{type:"thinking",...},{type:"text",text:"..."}]}}
+      // NOTE: Claude sends the FULL accumulated text each time (not deltas).
+      // We mark these with __replace__ prefix so the streaming logic replaces instead of appending.
       case "assistant": {
         const content = json.message?.content;
         if (!Array.isArray(content)) return null;
-        // Return the LAST meaningful block (text > tool_use > thinking)
-        // Claude sends the same message.id multiple times as content grows
         for (let i = content.length - 1; i >= 0; i--) {
           const block = content[i];
           if (block.type === "text" && block.text) {
-            return { type: "message", role: "assistant", content: block.text };
+            return { type: "message", role: "assistant", content: "__replace__" + block.text };
           }
           if (block.type === "tool_use") {
             return { type: "tool_use", role: "tool", content: JSON.stringify(block.input ?? ""), toolName: block.name };
           }
           if (block.type === "thinking" && block.thinking) {
-            return { type: "thinking", role: "assistant", content: block.thinking };
+            return { type: "thinking", role: "assistant", content: "__replace__" + block.thinking };
           }
         }
         return null;
       }
 
-      // Final result event
-      case "result": {
-        const content = json.result as string | undefined;
-        if (content) return { type: "message", role: "assistant", content };
+      // ─── Gemini stream-json format ─────────────────────────────────
+      // Events: {type:"message", role:"assistant", content:"...", delta:true}
+      case "message": {
+        if (json.role === "user") return null; // skip user echo
+        if (json.role === "assistant" && typeof json.content === "string") {
+          return { type: "message", role: "assistant", content: json.content };
+        }
         return null;
+      }
+
+      // Final result event — always treat as stop signal
+      // Claude: {type:"result", result:"...", subtype:"success"}
+      // Gemini: {type:"result", status:"success"}
+      // The actual response already came via "assistant" or "message" events.
+      case "result": {
+        return { type: "status", role: "system", content: "__stop__" };
       }
 
       // ─── Raw API stream format (content_block_delta) ───────────────
@@ -234,8 +246,7 @@ function usePerMessageSession(provider: ProviderInfo) {
   const streamMsg = useRef<ChatMessage | null>(null);
   const isFirstMessage = useRef(true);
   const seenMsgIds = useRef(new Set<string>());
-  const nextId = useRef(0);
-  const mkId = () => `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${nextId.current++}`;
+  const mkId = () => `msg_${crypto.randomUUID()}`;
 
   // Listen for data from the spawned process
   useEffect(() => {
@@ -280,44 +291,42 @@ function usePerMessageSession(provider: ProviderInfo) {
 
         if (parsed.type === "status" && parsed.content === "__stop__") {
           if (streamMsg.current) {
-            streamMsg.current = { ...streamMsg.current, metadata: { ...streamMsg.current.metadata, isStreaming: false } };
-            setMessages(prev => {
-              const copy = [...prev];
-              copy[copy.length - 1] = { ...streamMsg.current! };
-              return copy;
-            });
+            const finalMsg = { ...streamMsg.current, metadata: { ...streamMsg.current.metadata, isStreaming: false } };
             streamMsg.current = null;
+            setMessages(prev => {
+              // Find and update the streaming message by id
+              return prev.map(m => m.id === finalMsg.id ? finalMsg : m);
+            });
           }
           setStatus("idle");
           continue;
         }
 
         if (parsed.type === "message" || parsed.type === "thinking") {
+          // Handle __replace__ prefix: Claude sends full text each time, not deltas
+          const isReplace = parsed.content.startsWith("__replace__");
+          const content = isReplace ? parsed.content.slice(11) : parsed.content;
+
           if (streamMsg.current && streamMsg.current.type === parsed.type) {
-            streamMsg.current = { ...streamMsg.current, content: streamMsg.current.content + parsed.content };
+            // Append or replace content in existing streaming message
+            streamMsg.current = { ...streamMsg.current, content: isReplace ? content : streamMsg.current.content + content };
+            const updated = { ...streamMsg.current };
+            setMessages(prev => prev.map(m => m.id === updated.id ? updated : m));
           } else {
             // Flush previous streaming msg, start new one
             if (streamMsg.current) {
-              streamMsg.current = { ...streamMsg.current, metadata: { ...streamMsg.current.metadata, isStreaming: false } };
-              setMessages(prev => {
-                const copy = [...prev];
-                copy[copy.length - 1] = { ...streamMsg.current! };
-                return copy;
-              });
+              const flushed = { ...streamMsg.current, metadata: { ...streamMsg.current.metadata, isStreaming: false } };
+              streamMsg.current = null;
+              setMessages(prev => prev.map(m => m.id === flushed.id ? flushed : m));
             }
             const newMsg: ChatMessage = {
-              id: mkId(), role: parsed.role, content: parsed.content,
+              id: mkId(), role: parsed.role, content: content,
               timestamp: Date.now(), type: parsed.type,
               metadata: { isStreaming: true, provider: provider.id },
             };
             streamMsg.current = newMsg;
             setMessages(prev => [...prev, newMsg]);
           }
-          setMessages(prev => {
-            const copy = [...prev];
-            copy[copy.length - 1] = { ...streamMsg.current! };
-            return copy;
-          });
           setStatus(parsed.type === "thinking" ? "thinking" : "responding");
         } else if (parsed.type === "tool_use") {
           setStatus("tool_use");
@@ -399,8 +408,7 @@ function usePTYSession(provider: ProviderInfo, enabled: boolean) {
   const ansiBuf = useRef("");
   const ansiFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const streamMsg = useRef<ChatMessage | null>(null);
-  const nextId = useRef(0);
-  const mkId = () => `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${nextId.current++}`;
+  const mkId = () => `msg_${crypto.randomUUID()}`;
 
   useEffect(() => {
     if (!enabled) return;

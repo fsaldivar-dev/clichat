@@ -6,6 +6,7 @@ function createMockSession(): ChatSessionEvents {
   return {
     on: vi.fn(),
     off: vi.fn(),
+    emitEvent: vi.fn(),
     messages: [],
     status: "idle",
     provider: { id: "test", label: "Test", parser: { feed: vi.fn(() => []), reset: vi.fn() }, spawn: vi.fn(), formatInput: (t: string) => t },
