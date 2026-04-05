@@ -26,6 +26,8 @@ export interface Options {
   maxBudget?: number;
   cwd?: string;
   env?: Record<string, string>;
+  /** MCP server configuration (Claude only — passed to Agent SDK) */
+  mcpServers?: Record<string, unknown> | string;
 }
 
 export interface Session {
