@@ -1,98 +1,130 @@
-import { run, stream, parseJSON } from "./spawn.js";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Response, StreamChunk, Options, Session, CliFunction } from "./types.js";
 
-function buildArgs(prompt: string, opts?: Options, extra?: string[]): string[] {
-  const args = ["-p", prompt, "--output-format", "stream-json", "--verbose"];
-  if (opts?.model) args.push("--model", opts.model);
-  if (opts?.systemPrompt) args.push("--system-prompt", opts.systemPrompt);
-  if (opts?.permissionMode) args.push("--permission-mode", opts.permissionMode);
-  if (opts?.allowedTools?.length) args.push("--allowedTools", ...opts.allowedTools);
-  if (opts?.maxTurns) args.push("--max-turns", String(opts.maxTurns));
-  if (opts?.maxBudget) args.push("--max-budget-usd", String(opts.maxBudget));
-  if (extra) args.push(...extra);
-  return args;
+function buildOptions(opts?: Options) {
+  const sdkOpts: Record<string, unknown> = {};
+  if (opts?.model) sdkOpts.model = opts.model;
+  if (opts?.systemPrompt) sdkOpts.systemPrompt = opts.systemPrompt;
+  if (opts?.permissionMode) sdkOpts.permissionMode = opts.permissionMode;
+  if (opts?.allowedTools) sdkOpts.allowedTools = opts.allowedTools;
+  if (opts?.maxTurns) sdkOpts.maxTurns = opts.maxTurns;
+  if (opts?.maxBudget) sdkOpts.maxBudgetUsd = opts.maxBudget;
+  if (opts?.cwd) sdkOpts.cwd = opts.cwd;
+  if (opts?.mcpServers) sdkOpts.mcpConfig = opts.mcpServers;
+  return sdkOpts;
 }
 
-function parseOutput(stdout: string): Response {
+function extractResponse(messages: Array<Record<string, unknown>>): Response {
   let text = "";
   let thinking = "";
   let model: string | undefined;
-  let usage: Response["usage"] | undefined;
 
-  for (const line of stdout.split("\n")) {
-    const json = parseJSON(line);
-    if (!json) continue;
-
-    if (json.type === "assistant") {
-      const content = (json.message as Record<string, unknown>)?.content;
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (block.type === "text" && block.text) text = block.text;
-          if (block.type === "thinking" && block.thinking) thinking = block.thinking;
+  for (const msg of messages) {
+    if (msg.type === "assistant") {
+      const content = (msg as Record<string, unknown>).message;
+      if (content && typeof content === "object") {
+        const m = content as Record<string, unknown>;
+        if (m.model) model = m.model as string;
+        const blocks = m.content;
+        if (Array.isArray(blocks)) {
+          for (const b of blocks) {
+            if (b.type === "text" && b.text) text = b.text;
+            if (b.type === "thinking" && b.thinking) thinking = b.thinking;
+          }
         }
       }
     }
-
-    if (json.type === "result" && typeof json.result === "string") {
-      if (!text) text = json.result;
-      if (typeof json.total_cost_usd === "number") {
-        usage = { cost: json.total_cost_usd, duration: json.duration_ms as number };
-        const u = json.usage as Record<string, unknown> | undefined;
-        if (u) {
-          usage.inputTokens = u.input_tokens as number;
-          usage.outputTokens = u.output_tokens as number;
-        }
-      }
-      const mu = json.modelUsage as Record<string, unknown> | undefined;
-      if (mu) model = Object.keys(mu)[0];
+    if (msg.type === "result") {
+      if (typeof msg.result === "string" && !text) text = msg.result;
     }
   }
 
-  return { text, thinking: thinking || undefined, provider: "claude", model, usage };
+  return { text, thinking: thinking || undefined, provider: "claude", model };
 }
 
 async function claudeFn(prompt: string, opts?: Options): Promise<Response> {
-  const args = buildArgs(prompt, opts);
-  const result = await run("claude", args, { cwd: opts?.cwd, env: opts?.env });
-  return parseOutput(result.stdout);
+  const q = query({ prompt, options: buildOptions(opts) as any });
+  const messages: Array<Record<string, unknown>> = [];
+
+  for await (const msg of q) {
+    messages.push(msg as unknown as Record<string, unknown>);
+  }
+
+  return extractResponse(messages);
 }
 
 claudeFn.stream = async function* (prompt: string, opts?: Options): AsyncGenerator<StreamChunk> {
-  const args = buildArgs(prompt, opts);
-  for await (const line of stream("claude", args, { cwd: opts?.cwd, env: opts?.env })) {
-    const json = parseJSON(line);
-    if (!json) continue;
+  const q = query({ prompt, options: buildOptions(opts) as any });
 
-    if (json.type === "assistant") {
-      const content = (json.message as Record<string, unknown>)?.content;
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (block.type === "text" && block.text) yield { text: block.text, type: "text" };
-          if (block.type === "thinking" && block.thinking) yield { text: block.thinking, type: "thinking" };
-          if (block.type === "tool_use") yield { text: block.name ?? "", type: "tool_use", toolName: block.name };
+  for await (const msg of q) {
+    const m = msg as unknown as Record<string, unknown>;
+
+    if (m.type === "assistant") {
+      const message = m.message as Record<string, unknown> | undefined;
+      const blocks = message?.content;
+      if (Array.isArray(blocks)) {
+        for (const b of blocks) {
+          if (b.type === "text" && b.text) yield { text: b.text, type: "text" as const };
+          if (b.type === "thinking" && b.thinking) yield { text: b.thinking, type: "thinking" as const };
+          if (b.type === "tool_use") yield { text: b.name ?? "", type: "tool_use" as const, toolName: b.name };
         }
       }
     }
 
-    if (json.type === "result") yield { text: "", type: "done" };
+    if (m.type === "result") {
+      yield { text: "", type: "done" as const };
+    }
   }
 };
 
 claudeFn.session = (opts?: Options): Session => {
-  let isFirst = true;
+  let sessionId: string | undefined;
+
   return {
     async send(prompt: string) {
-      const extra = isFirst ? [] : ["--continue"];
-      isFirst = false;
-      const args = buildArgs(prompt, opts, extra);
-      const result = await run("claude", args, { cwd: opts?.cwd, env: opts?.env });
-      return parseOutput(result.stdout);
+      const sdkOpts = buildOptions(opts) as Record<string, unknown>;
+      if (sessionId) sdkOpts.resume = sessionId;
+
+      const q = query({ prompt, options: sdkOpts as any });
+      const messages: Array<Record<string, unknown>> = [];
+
+      for await (const msg of q) {
+        const m = msg as unknown as Record<string, unknown>;
+        messages.push(m);
+        // Capture session ID for continuation
+        if (m.session_id && typeof m.session_id === "string") {
+          sessionId = m.session_id;
+        }
+      }
+
+      return extractResponse(messages);
     },
+
     async *stream(prompt: string) {
-      const extra = isFirst ? [] : ["--continue"];
-      isFirst = false;
-      const args = buildArgs(prompt, opts, extra);
-      yield* claudeFn.stream(prompt, opts);
+      const sdkOpts = buildOptions(opts) as Record<string, unknown>;
+      if (sessionId) sdkOpts.resume = sessionId;
+
+      const q = query({ prompt, options: sdkOpts as any });
+
+      for await (const msg of q) {
+        const m = msg as unknown as Record<string, unknown>;
+        if (m.session_id && typeof m.session_id === "string") {
+          sessionId = m.session_id;
+        }
+
+        if (m.type === "assistant") {
+          const message = m.message as Record<string, unknown> | undefined;
+          const blocks = message?.content;
+          if (Array.isArray(blocks)) {
+            for (const b of blocks) {
+              if (b.type === "text" && b.text) yield { text: b.text, type: "text" as const };
+              if (b.type === "thinking" && b.thinking) yield { text: b.thinking, type: "thinking" as const };
+            }
+          }
+        }
+
+        if (m.type === "result") yield { text: "", type: "done" as const };
+      }
     },
   };
 };
