@@ -122,14 +122,12 @@ function parseStreamJsonLine(line: string): { type: ParsedEventType; role: Messa
         return null;
       }
 
-      // Final result event (Claude: json.result, Gemini: json.status)
+      // Final result event — always treat as stop signal
+      // Claude: {type:"result", result:"...", subtype:"success"}
+      // Gemini: {type:"result", status:"success"}
+      // The actual response already came via "assistant" or "message" events.
       case "result": {
-        // Claude format
-        const content = json.result as string | undefined;
-        if (content) return { type: "message", role: "assistant", content };
-        // Gemini format — just a status event, response already came via "message"
-        if (json.status === "success") return { type: "status", role: "system", content: "__stop__" };
-        return null;
+        return { type: "status", role: "system", content: "__stop__" };
       }
 
       // ─── Raw API stream format (content_block_delta) ───────────────
